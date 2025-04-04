@@ -1,0 +1,3 @@
+[submodule "example/amazon-sagemaker-immersion-day"]
+	path = example/amazon-sagemaker-immersion-day
+	url = https://github.com/aws-samples/amazon-sagemaker-immersion-day.git
