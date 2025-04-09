@@ -8,6 +8,7 @@ from aws_cdk import (
     aws_s3_deployment as s3deploy,
     RemovalPolicy,
     CfnOutput,
+    aws_ec2 as ec2,
 )
 
 from os import environ
@@ -20,11 +21,18 @@ def package_sagemaker_model(model_dir: Path) -> Path:
 
     # packages a model directory into a tar.gz file
     # returns the path to the tar.gz file
+    # creates the file in a subdirectory called /asset/
 
     if not model_dir.exists():
         raise FileNotFoundError(f"Model directory {model_dir} does not exist")
 
-    tar_path = model_dir / Path(f"{model_dir.name}.tar.gz")
+    if not model_dir.is_dir():
+        raise NotADirectoryError(f"Model directory {model_dir} is not a directory")
+
+    target_path = model_dir / "asset"
+    target_path.mkdir(exist_ok=True)
+
+    tar_path = target_path / Path(f"{model_dir.name}.tar.gz")
     print(f"Packaging model {model_dir.name} into {tar_path}")
     with TarFile.open(tar_path, "w:gz") as tar:
         tar.add(model_dir, arcname=model_dir.name)
@@ -56,11 +64,10 @@ class Inference_CDK_Stack(Stack):
             self,
             "models_bucket",
             bucket_name=f"cdk-sagemaker-models-{acc_id}-{acc_region}",
-            removal_policy=RemovalPolicy.DESTROY,
+            removal_policy=RemovalPolicy.RETAIN,
         )
 
         data_path = Path(__file__).parent / Path("../data")
-        model_path = Path(__file__).parent / Path("../models/pytorch_yolo")
 
         # deploy the data
         dataBucketDeployment = s3deploy.BucketDeployment(
@@ -69,21 +76,22 @@ class Inference_CDK_Stack(Stack):
             sources=[s3deploy.Source.asset(str(data_path))],
             destination_bucket=data_bucket,
             retain_on_delete=False,
+            memory_limit=1024,  # a gb in mb
         )
 
         dataBucketDeployment.node.add_dependency(data_bucket)
 
+        model_path = Path(__file__).parent / Path("../models/pytorch_yolo")
         tarfile = package_sagemaker_model(model_path)
-
+        print(f"model file saved at {tarfile.resolve()}")
         # upload the models
         modelBucketDeployment = s3deploy.BucketDeployment(
             self,
             "deploy_models",
-            sources=[s3deploy.Source.asset(str(tarfile))],
+            sources=[s3deploy.Source.asset(str(tarfile.parent))],
             destination_bucket=models_bucket,
-            retain_on_delete=False,
-            content_type="application/x-tar",
-            content_encoding="gzip",
+            retain_on_delete=True,
+            memory_limit=512,  # a gb in mb, model weights around 60mb tho
         )
 
         modelBucketDeployment.node.add_dependency(models_bucket)
@@ -118,6 +126,7 @@ class Inference_CDK_Stack(Stack):
         fx_version = "1.5.1"
         instance_type = "inf"
         image_id = f"{container_account_id}.dkr.ecr.{container_region}.amazonaws.com/sagemaker-neo-pytorch:{fx_version}-{instance_type}-py3"
+
         container = sagemaker.CfnModel.ContainerDefinitionProperty(
             image=image_id,
             model_data_url=modelurl,
@@ -131,8 +140,13 @@ class Inference_CDK_Stack(Stack):
             self,
             "PytorchPersonDetectionModel",
             execution_role_arn=sagemaker_role.role_arn,
-            primary_container=sagemaker.CfnModel.ContainerDefinitionProperty(),
+            primary_container=container,
         )
+
+        model.node.add_dependency(sagemaker_role)
+        model.node.add_dependency(modelBucketDeployment)
+
+        ec2_instance_type = "ml.inf1.xlarge"
 
         # create an endpoint configuration
         endpoint_config = sagemaker.CfnEndpointConfig(
@@ -140,7 +154,7 @@ class Inference_CDK_Stack(Stack):
             "PytorchPersonDetectionEndpointConfig",
             production_variants=[
                 sagemaker.CfnEndpointConfig.ProductionVariantProperty(
-                    instance_type=instance_type,
+                    instance_type=ec2_instance_type,
                     initial_instance_count=1,
                     initial_variant_weight=1,
                     model_name=model.attr_model_name,
@@ -148,6 +162,8 @@ class Inference_CDK_Stack(Stack):
                 )
             ],
         )
+
+        endpoint_config.node.add_dependency(model)
 
         # create an endpoint
         endpoint = sagemaker.CfnEndpoint(
