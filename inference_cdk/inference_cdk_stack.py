@@ -10,6 +10,7 @@ from aws_cdk import (
     CfnOutput,
     aws_ec2 as ec2,
 )
+from sagemaker import image_uris
 
 from os import environ
 from pathlib import Path
@@ -64,7 +65,7 @@ class Inference_CDK_Stack(Stack):
             self,
             "models_bucket",
             bucket_name=f"cdk-sagemaker-models-{acc_id}-{acc_region}",
-            removal_policy=RemovalPolicy.RETAIN,
+            removal_policy=RemovalPolicy.DESTROY,
         )
 
         data_path = Path(__file__).parent / Path("../data")
@@ -121,14 +122,11 @@ class Inference_CDK_Stack(Stack):
         )
 
         modelurl = f"s3://{models_bucket.bucket_name}/{tarfile.name}"
-        container_account_id = "785573368785"
-        container_region = "us-east-1"
-        fx_version = "1.5.1"
-        instance_type = "inf"
-        image_id = f"{container_account_id}.dkr.ecr.{container_region}.amazonaws.com/sagemaker-neo-pytorch:{fx_version}-{instance_type}-py3"
+
+        img_uri = "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
 
         container = sagemaker.CfnModel.ContainerDefinitionProperty(
-            image=image_id,
+            image=img_uri,
             model_data_url=modelurl,
             image_config=sagemaker.CfnModel.ImageConfigProperty(
                 repository_access_mode="Platform",
