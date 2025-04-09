@@ -1,6 +1,6 @@
 import torch
 import torchvision
-from torchvision.io import read_image
+from torchvision.io import decode_image
 from torchvision.utils import draw_bounding_boxes, draw_segmentation_masks
 from torchvision.transforms import v2
 import torchvision
@@ -21,6 +21,7 @@ _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _img_content_types = [
     "image/jpeg",
     "image/png",
+    "application/x-image",
 ]
 
 _python_content_types = [
@@ -46,16 +47,14 @@ def model_fn(model_dir, context) -> dict:
 
     model_path = Path(model_dir) / _model_file_name
 
-    model = inference_model.load_state_dict(
-        torch.load(model_path, map_location=_device)
-    )
+    inference_model.load_state_dict(torch.load(model_path, map_location=_device))
 
     print("[INFO] model loaded successfully")
 
-    return model
+    return inference_model
 
 
-def input_fn(input_data, content_type):
+def input_fn(input_data: bytes, content_type):
     """
     Parse input data payload
     """
@@ -67,9 +66,13 @@ def input_fn(input_data, content_type):
         [v2.ToDtype(torch.float, scale=True), v2.ToPureTensor()]
     )
     array = None
-    if content_type in _python_content_types + _img_content_types:
-        array = read_image(input_data, mode=v2.ImageReadMode.RGB)
-
+    if content_type in _img_content_types:
+        array = decode_image(
+            torch.frombuffer(input_data, dtype=torch.uint8),
+            mode=torchvision.io.ImageReadMode.RGB,
+        )
+    elif content_type in _python_content_types:
+        array = torch.load(input_data, map_location=_device)
     else:
         raise Exception("Unsupported content type: {}".format(content_type))
 
@@ -87,8 +90,8 @@ def predict_fn(input_dict, model):
     raw_image = input_dict["raw_image"]
     with torch.no_grad():
         predictions = model([input_image])
-        score_mask = predictions[0]["scores"] > _prediction_threshold
-
+        pred = predictions[0]
+        score_mask = pred["scores"] > _prediction_threshold
         pred = {
             "labels": pred["labels"][score_mask],
             "scores": pred["scores"][score_mask],
@@ -100,7 +103,9 @@ def predict_fn(input_dict, model):
         print("drawing bounding boxes and masks")
 
     image = (
-        255.0 * (raw_image - raw_image.min()) / (raw_image.max() - raw_image.min())
+        255.0
+        * (input_image - input_image.min())
+        / (input_image.max() - input_image.min())
     ).to(torch.uint8)
     image = image[:3, ...]
 
@@ -122,12 +127,8 @@ def output_fn(prediction, content_type):
     print("[INFO] output_fn-thread id: {}".format(threading.currentThread().getName()))
     print("[INFO] output_fn-process id: {}".format(os.getpid()))
 
-    if content_type in _python_content_types:
-        # return as a numpy array
-        return prediction.cpu().numpy()
-
-    elif content_type in _img_content_types:
-        # return as an image
-        return torchvision.transforms.ToPILImage()(prediction, mode="RGB")
+    # return the response
+    if content_type in _python_content_types + _img_content_types:
+        return prediction.permute(1, 2, 0)
     else:
         raise Exception("Unsupported content type: {}".format(content_type))
