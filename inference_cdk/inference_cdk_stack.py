@@ -8,9 +8,7 @@ from aws_cdk import (
     aws_s3_deployment as s3deploy,
     RemovalPolicy,
     CfnOutput,
-    aws_ec2 as ec2,
 )
-from sagemaker import image_uris
 
 from os import environ
 from pathlib import Path
@@ -30,14 +28,19 @@ def package_sagemaker_model(model_dir: Path) -> Path:
     if not model_dir.is_dir():
         raise NotADirectoryError(f"Model directory {model_dir} is not a directory")
 
-    target_path = model_dir / "asset"
+    target_path = model_dir
     target_path.mkdir(exist_ok=True)
 
     tar_path = target_path / Path(f"{model_dir.name}.tar.gz")
     print(f"Packaging model {model_dir.name} into {tar_path}")
-    with TarFile.open(tar_path, "w:gz") as tar:
-        tar.add(model_dir, arcname=model_dir.name)
-    print(f"Model packaged into {tar_path} successfully")
+    try:
+        with TarFile.open(tar_path, "w:gz") as tar:
+            tar.add(model_dir / "model.pt", arcname="model.pt")
+            tar.add(model_dir / "code", arcname="code")
+        print(f"Model packaged into {tar_path} successfully")
+    except Exception as e:
+        print(f"Error packaging model: {e}")
+        raise e
     return tar_path
 
 
@@ -60,6 +63,7 @@ class Inference_CDK_Stack(Stack):
             bucket_name=f"cdk-sagemaker-data-{acc_id}-{acc_region}",
             removal_policy=RemovalPolicy.DESTROY,
             auto_delete_objects=True,
+            enforce_ssl=True,
         )
 
         models_bucket = s3.Bucket(
@@ -68,6 +72,7 @@ class Inference_CDK_Stack(Stack):
             bucket_name=f"cdk-sagemaker-models-{acc_id}-{acc_region}",
             removal_policy=RemovalPolicy.DESTROY,
             auto_delete_objects=True,
+            enforce_ssl=True,
         )
 
         data_path = Path(__file__).parent / Path("../data")
@@ -79,7 +84,7 @@ class Inference_CDK_Stack(Stack):
             sources=[s3deploy.Source.asset(str(data_path))],
             destination_bucket=data_bucket,
             retain_on_delete=False,
-            memory_limit=1024,  # a gb in mb
+            memory_limit=512,  # a gb in mb
         )
 
         dataBucketDeployment.node.add_dependency(data_bucket)
@@ -87,14 +92,18 @@ class Inference_CDK_Stack(Stack):
         model_path = Path(__file__).parent / Path("../models/pytorch_yolo")
         tarfile = package_sagemaker_model(model_path)
         print(f"model file saved at {tarfile.resolve()}")
-        # upload the models
+
         modelBucketDeployment = s3deploy.BucketDeployment(
             self,
             "deploy_models",
-            sources=[s3deploy.Source.asset(str(tarfile.parent))],
+            sources=[
+                s3deploy.Source.asset(
+                    str(tarfile.parent.resolve()), exclude=["*.py", "*.txt", "*.pt"]
+                ),
+            ],
             destination_bucket=models_bucket,
             retain_on_delete=False,
-            memory_limit=512,  # a gb in mb, model weights around 60mb tho
+            memory_limit=512,  # a gb in mb
         )
 
         modelBucketDeployment.node.add_dependency(models_bucket)
@@ -125,9 +134,12 @@ class Inference_CDK_Stack(Stack):
 
         modelurl = f"s3://{models_bucket.bucket_name}/{tarfile.name}"
 
-        # img_uri = "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
-
-        img_uri = "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
+        # Use environment variables for image URI and instance type
+        img_uri = environ.get(
+            "SAGEMAKER_IMAGE_URI",
+            "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-cpu-py312-ubuntu22.04-sagemaker",
+        )
+        ec2_instance_type = environ.get("SAGEMAKER_INSTANCE_TYPE", "ml.inf1.xlarge")
 
         container = sagemaker.CfnModel.ContainerDefinitionProperty(
             image=img_uri,
@@ -135,25 +147,26 @@ class Inference_CDK_Stack(Stack):
             image_config=sagemaker.CfnModel.ImageConfigProperty(
                 repository_access_mode="Platform",
             ),
+            mode="SingleModel",
         )
 
         # create a model
         model = sagemaker.CfnModel(
             self,
-            "PytorchPersonDetectionModel",
+            "Model",
             execution_role_arn=sagemaker_role.role_arn,
             primary_container=container,
+            model_name="PytorchPersonDetectionModel",
         )
 
         model.node.add_dependency(sagemaker_role)
         model.node.add_dependency(modelBucketDeployment)
 
-        # ec2_instance_type = "ml.inf1.xlarge"
-        ec2_instance_type = "ml.m5.large"
+        timestamp = tarfile.stat().st_mtime
         # create an endpoint configuration
         endpoint_config = sagemaker.CfnEndpointConfig(
             self,
-            "PytorchPersonDetectionEndpointConfig",
+            f"PytorchPersonDetectionEndpointConfig-{timestamp}",
             production_variants=[
                 sagemaker.CfnEndpointConfig.ProductionVariantProperty(
                     instance_type=ec2_instance_type,
@@ -171,7 +184,17 @@ class Inference_CDK_Stack(Stack):
         endpoint = sagemaker.CfnEndpoint(
             self,
             "PytorchPersonDetectionEndpoint",
+            deployment_config=sagemaker.CfnEndpoint.DeploymentConfigProperty(
+                rolling_update_policy=sagemaker.CfnEndpoint.RollingUpdatePolicyProperty(
+                    maximum_batch_size=sagemaker.CfnEndpoint.CapacitySizeProperty(
+                        type="CAPACITY_PERCENT", value=50
+                    ),
+                    wait_interval_in_seconds=60,
+                    maximum_execution_timeout_in_seconds=1800,
+                )
+            ),
             endpoint_config_name=endpoint_config.attr_endpoint_config_name,
+            endpoint_name="PytorchPersonDetectionEndpoint",
         )
 
         # As outputs, we want the bucket urls, and the model endpoint
