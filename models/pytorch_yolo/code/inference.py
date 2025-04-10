@@ -1,7 +1,7 @@
 from logging import getLogger
 import torch
 import torchvision
-from torchvision.io import decode_image
+from torchvision.io import decode_image, encode_jpeg, encode_png
 from torchvision.utils import draw_bounding_boxes, draw_segmentation_masks
 from torchvision.transforms import v2
 import torchvision
@@ -9,8 +9,8 @@ from pathlib import Path
 import torch
 import os
 import threading
-from model_class import inference_model
 import logging
+
 
 logger = getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -19,7 +19,7 @@ logger.setLevel(logging.INFO)
 _prediction_threshold = 0.5
 _segmentation_threshold = 0.6
 
-_model_file_name = "inference_model_torchscript.pt"
+_model_file_name = "model.pt"
 
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -40,6 +40,9 @@ logger.info(
         os.environ.get("SAGEMAKER_MODEL_SERVER_WORKERS", "nonon")
     )
 )
+logger.info(
+    f"[INFO] Container started, model {_model_file_name} will load on device {_device}"
+)
 
 
 def model_fn(model_dir, context) -> dict:
@@ -57,11 +60,12 @@ def model_fn(model_dir, context) -> dict:
     logger.info(
         "[INFO] model_path: {}, exists: {}".format(model_path, model_path.exists())
     )
-    inference_model.load_state_dict(torch.load(model_path, map_location=_device))
 
+    model = torch.jit.load(model_path, map_location=_device)
+    model.eval()
     logger.info("[INFO] model loaded successfully")
 
-    return inference_model
+    return model
 
 
 def input_fn(input_data: bytes, content_type):
@@ -102,7 +106,7 @@ def predict_fn(input_dict, model):
     raw_image = input_dict["raw_image"]
     with torch.no_grad():
         predictions = model([input_image])
-        pred = predictions[0]
+        pred = predictions[0] if len(predictions[0]) > 0 else predictions[1][0]
         score_mask = pred["scores"] > _prediction_threshold
         pred = {
             "labels": pred["labels"][score_mask],
@@ -111,7 +115,6 @@ def predict_fn(input_dict, model):
             "masks": pred["masks"][score_mask],
         }
         logger.info("predict_fn: Predicting for an image done")
-        logger.info("predict_fn: pred: {}".format(pred))
         logger.info("drawing bounding boxes and masks")
 
     image = (
@@ -132,17 +135,26 @@ def predict_fn(input_dict, model):
         output_image, masks, alpha=0.5, colors="blue"
     )
 
-    return output_image
+    return {"output_image": output_image, "json": pred}
 
 
-def output_fn(prediction, content_type):
+def output_fn(prediction, accept) -> bytes:
     logger.info(
         "[INFO] output_fn-thread id: {}".format(threading.currentThread().getName())
     )
     logger.info("[INFO] output_fn-process id: {}".format(os.getpid()))
 
     # return the response
-    if content_type in _python_content_types + _img_content_types:
-        return prediction.permute(1, 2, 0)
+    if accept in _python_content_types:
+        return prediction["output_image"].cpu().numpy()
+    elif accept in _img_content_types:
+        if accept == "image/jpeg":
+            return encode_jpeg(prediction["output_image"].cpu()).numpy().tobytes()
+        elif accept == "image/png":
+            return encode_png(prediction["output_image"].cpu()).numpy().tobytes()
+        elif accept == "application/x-image":
+            return prediction["output_image"].cpu().numpy().tobytes()
+    elif accept == "application/json":
+        return prediction["json"]
     else:
-        raise Exception("Unsupported content type: {}".format(content_type))
+        raise Exception("Unsupported content type: {}".format(accept))
