@@ -59,6 +59,7 @@ class Inference_CDK_Stack(Stack):
             "data_bucket",
             bucket_name=f"cdk-sagemaker-data-{acc_id}-{acc_region}",
             removal_policy=RemovalPolicy.DESTROY,
+            auto_delete_objects=True,
         )
 
         models_bucket = s3.Bucket(
@@ -66,6 +67,7 @@ class Inference_CDK_Stack(Stack):
             "models_bucket",
             bucket_name=f"cdk-sagemaker-models-{acc_id}-{acc_region}",
             removal_policy=RemovalPolicy.DESTROY,
+            auto_delete_objects=True,
         )
 
         data_path = Path(__file__).parent / Path("../data")
@@ -91,7 +93,7 @@ class Inference_CDK_Stack(Stack):
             "deploy_models",
             sources=[s3deploy.Source.asset(str(tarfile.parent))],
             destination_bucket=models_bucket,
-            retain_on_delete=True,
+            retain_on_delete=False,
             memory_limit=512,  # a gb in mb, model weights around 60mb tho
         )
 
@@ -123,7 +125,9 @@ class Inference_CDK_Stack(Stack):
 
         modelurl = f"s3://{models_bucket.bucket_name}/{tarfile.name}"
 
-        img_uri = "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
+        # img_uri = "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
+
+        img_uri = "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
 
         container = sagemaker.CfnModel.ContainerDefinitionProperty(
             image=img_uri,
@@ -144,8 +148,8 @@ class Inference_CDK_Stack(Stack):
         model.node.add_dependency(sagemaker_role)
         model.node.add_dependency(modelBucketDeployment)
 
-        ec2_instance_type = "ml.inf1.xlarge"
-
+        # ec2_instance_type = "ml.inf1.xlarge"
+        ec2_instance_type = "ml.m5.large"
         # create an endpoint configuration
         endpoint_config = sagemaker.CfnEndpointConfig(
             self,
