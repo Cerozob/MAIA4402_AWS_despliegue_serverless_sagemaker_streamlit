@@ -1,0 +1,36 @@
+{
+    "models": [
+        {
+            "name": "YOLOPersonDetection",
+            "framework": "PyTorch",
+            "data_path": "./data/pytorch_yolo/",
+            "path": "./models/pytorch_yolo/",
+            "file_name": "model.pt",
+            "image_uri": "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-cpu-py312-ubuntu22.04-sagemaker",
+            "problem_type": "object detection",
+            "serverless": true
+        }
+    ],
+    "todo": [
+        {
+            "name": "BERTTextClassification",
+            "framework": "TensorFlow",
+            "data_path": "./data/tensorflow_bert/",
+            "path": "./models/tensorflow_bert/",
+            "file_name": "model.keras",
+            "image_uri": "763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.18.0-cpu-py310-ubuntu20.04-sagemaker",
+            "problem_type": "text classification",
+            "serverless": true
+        },
+        {
+            "name": "YOLOObjectDetectionKeras",
+            "framework": "TensorFlow",
+            "data_path": "./data/keras_yolo/",
+            "path": "./models/keras-yolo/",
+            "file_name": "model.keras",
+            "image_uri": "763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.18.0-cpu-py310-ubuntu20.04-sagemaker",
+            "problem_type": "object detection",
+            "serverless": true
+        }
+    ]
+}

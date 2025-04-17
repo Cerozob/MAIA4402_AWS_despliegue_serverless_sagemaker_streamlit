@@ -3,26 +3,51 @@ from os import environ
 
 import aws_cdk as cdk
 
-from inference_cdk.inference_cdk_stack import Inference_CDK_Stack
+from stacks.inference_cdk_stack import Inference_CDK_Stack
+from stacks.model_deployment_stack import ModelDeploymentStack
+from stacks.base_stack import BaseStack
+import json
+from pathlib import Path
+from BaseModel import BaseModel
 
+file_path = Path(__file__).parent / Path("config.json")
+config = {}
+
+with open(file_path) as f:
+    config = json.load(f)
+
+if config == {}:
+    raise Exception("No config.json file found")
+
+models = [BaseModel(**model) for model in config.get("models")]
 
 app = cdk.App()
-Inference_CDK_Stack(
-    app,
-    "InferenceStack",
-    # If you don't specify 'env', this stack will be environment-agnostic.
-    # Account/Region-dependent features and context lookups will not work,
-    # but a single synthesized template can be deployed anywhere.
-    # Uncomment the next line to specialize this stack for the AWS Account
-    # and Region that are implied by the current CLI configuration.
-    env=cdk.Environment(
-        account=environ.get("CDK_DEFAULT_ACCOUNT"),
-        region=environ.get("CDK_DEFAULT_REGION"),
-    ),
-    # Uncomment the next line if you know exactly what Account and Region you
-    # want to deploy the stack to. */
-    # env=cdk.Environment(account='123456789012', region='us-east-1'),
-    # For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html
+
+env = cdk.Environment(
+    account=environ.get("CDK_DEFAULT_ACCOUNT"),
+    region=environ.get("CDK_DEFAULT_REGION"),
 )
+
+base_stack = BaseStack(app, "BaseStack", env=env, stack_name="base-stack")
+
+for base_model in models:
+    deployed_model_stack = ModelDeploymentStack(
+        app,
+        f"ModelDeploymentStack-{base_model.name}",
+        model_obj=base_model,
+        data_bucket=base_stack.data_bucket,
+        model_bucket=base_stack.models_bucket,
+        env=env,
+        stack_name=f"model-deployment-stack-{base_model.name}",
+    )
+
+    model_inference_endpoint = Inference_CDK_Stack(
+        app,
+        f"DeployModelStack-{base_model.name}",
+        env=env,
+        metadata=deployed_model_stack.model_obj,
+        model=deployed_model_stack.sagemaker_model,
+        stack_name=f"model-endpoint-stack-{base_model.name}",
+    )
 
 app.synth()
