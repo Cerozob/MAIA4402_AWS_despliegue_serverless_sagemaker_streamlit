@@ -93,19 +93,14 @@ def input_fn(input_data: bytes, content_type):
         raise Exception("Unsupported content type: {}".format(content_type))
 
     # remove alpha channel if present
-    return {
-        "raw_image": input_data,
-        "input_image": image_transforms(array)[:3, ...].to(_device),
-    }
+    return image_transforms(array)[:3, ...].to(_device)
 
 
-def predict_fn(input_dict, model):
+def predict_fn(image_tensor, model):
     logger.info("predict_fn: Predicting for an image...")
     model.eval()
-    input_image = input_dict["input_image"]
-    raw_image = input_dict["raw_image"]
     with torch.no_grad():
-        predictions = model([input_image])
+        predictions = model([image_tensor])
         pred = predictions[0] if len(predictions[0]) > 0 else predictions[1][0]
         score_mask = pred["scores"] > _prediction_threshold
         pred = {
@@ -115,12 +110,17 @@ def predict_fn(input_dict, model):
             "masks": pred["masks"][score_mask],
         }
         logger.info("predict_fn: Predicting for an image done")
-        logger.info("drawing bounding boxes and masks")
 
+    return {"prediction": pred, "image_tensor": image_tensor}
+
+
+def _build_image(prediction_dict):
+    image_tensor = prediction_dict["image_tensor"]
+    pred = prediction_dict["prediction"]
     image = (
         255.0
-        * (input_image - input_image.min())
-        / (input_image.max() - input_image.min())
+        * (image_tensor - image_tensor.min())
+        / (image_tensor.max() - image_tensor.min())
     ).to(torch.uint8)
     image = image[:3, ...]
 
@@ -134,8 +134,7 @@ def predict_fn(input_dict, model):
     output_image = draw_segmentation_masks(
         output_image, masks, alpha=0.5, colors="blue"
     )
-
-    return {"output_image": output_image, "json": pred}
+    return output_image
 
 
 def output_fn(prediction, accept) -> bytes:
@@ -145,16 +144,16 @@ def output_fn(prediction, accept) -> bytes:
     logger.info("[INFO] output_fn-process id: {}".format(os.getpid()))
 
     # return the response
-    if accept in _python_content_types:
-        return prediction["output_image"].cpu().numpy()
-    elif accept in _img_content_types:
-        if accept == "image/jpeg":
-            return encode_jpeg(prediction["output_image"].cpu()).numpy().tobytes()
-        elif accept == "image/png":
-            return encode_png(prediction["output_image"].cpu()).numpy().tobytes()
-        elif accept == "application/x-image":
-            return prediction["output_image"].cpu().numpy().tobytes()
-    elif accept == "application/json":
-        return prediction["json"]
+    if accept == "application/json":
+        return prediction["prediction"]
     else:
-        raise Exception("Unsupported content type: {}".format(accept))
+        output_image = _build_image(prediction).cpu()
+        if accept in _python_content_types:
+            return output_image.numpy()
+        elif accept in _img_content_types:
+            if accept == "image/jpeg":
+                return encode_jpeg(output_image).numpy().tobytes()
+            elif accept == "image/png" or accept == "application/x-image":
+                return encode_png(output_image).numpy().tobytes()
+        else:
+            raise Exception("Unsupported content type: {}".format(accept))
