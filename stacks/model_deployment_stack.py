@@ -1,5 +1,5 @@
 from aws_cdk import (
-    Stack,
+    NestedStack,
     aws_s3 as s3,
     aws_iam as iam,
     aws_sagemaker as sagemaker,
@@ -41,7 +41,7 @@ def package_sagemaker_model(model_dir: Path, model_file_name: str) -> Path:
     return tar_path
 
 
-class ModelDeploymentStack(Stack):
+class ModelDeploymentStack(NestedStack):
 
     def __init__(
         self,

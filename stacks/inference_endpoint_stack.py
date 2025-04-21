@@ -1,6 +1,6 @@
 from typing import TypedDict
 from aws_cdk import (
-    Stack,
+    NestedStack,
     aws_sagemaker as sagemaker,
     CfnOutput,
 )
@@ -9,7 +9,7 @@ from BaseModel import BaseModel
 from constructs import Construct
 
 
-class Inference_CDK_Stack(Stack):
+class InferenceEndpointStack(NestedStack):
 
     def __init__(
         self,
