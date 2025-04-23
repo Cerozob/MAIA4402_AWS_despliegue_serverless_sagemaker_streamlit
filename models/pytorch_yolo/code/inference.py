@@ -10,7 +10,7 @@ import torch
 import os
 import threading
 import logging
-
+import json
 
 logger = getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -145,7 +145,19 @@ def output_fn(prediction, accept) -> bytes:
 
     # return the response
     if accept == "application/json":
-        return prediction["prediction"]
+        pred_dict = prediction["prediction"]  # Get the prediction dictionary
+
+        # Convert PyTorch tensors to lists and create JSON-serializable dictionary
+        json_output = {
+            "predictions": {
+                "boxes": pred_dict["boxes"].cpu().numpy().tolist(),
+                "labels": pred_dict["labels"].cpu().numpy().tolist(),
+                "scores": pred_dict["scores"].cpu().numpy().tolist(),
+                # TODO check if it works -- Convert masks if needed - assuming masks are binary tensors
+                "masks": pred_dict["masks"].cpu().numpy().tolist(),
+            }
+        }
+        return json.dumps(json_output).encode("utf-8")
     else:
         output_image = _build_image(prediction).cpu()
         if accept in _python_content_types:
