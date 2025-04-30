@@ -32,5 +32,6 @@
             "problem_type": "object detection",
             "serverless": true
         }
-    ]
+    ],
+    "parameter_name": "sagemaker_endpoints"
 }

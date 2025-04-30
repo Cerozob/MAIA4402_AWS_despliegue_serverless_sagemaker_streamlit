@@ -6,6 +6,7 @@ from aws_cdk import (
     aws_s3_deployment as s3deploy,
     RemovalPolicy,
     CfnOutput,
+    aws_ssm as ssm,
 )
 
 from os import environ

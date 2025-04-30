@@ -1,4 +1,6 @@
+import io
 from logging import getLogger
+import numpy as np
 import torch
 import torchvision
 from torchvision.io import decode_image, encode_jpeg, encode_png
@@ -137,7 +139,8 @@ def _build_image(prediction_dict):
     return output_image
 
 
-def output_fn(prediction, accept) -> bytes:
+def output_fn(prediction, accept):
+    # returns a tuple of the serialized prediction and the content type
     logger.info(
         "[INFO] output_fn-thread id: {}".format(threading.currentThread().getName())
     )
@@ -146,26 +149,32 @@ def output_fn(prediction, accept) -> bytes:
     # return the response
     if accept == "application/json":
         pred_dict = prediction["prediction"]  # Get the prediction dictionary
+        masks = (pred_dict["masks"] > _segmentation_threshold).detach().cpu().numpy()
 
         # Convert PyTorch tensors to lists and create JSON-serializable dictionary
         json_output = {
             "predictions": {
-                "boxes": pred_dict["boxes"].cpu().numpy().tolist(),
-                "labels": pred_dict["labels"].cpu().numpy().tolist(),
-                "scores": pred_dict["scores"].cpu().numpy().tolist(),
+                "boxes": pred_dict["boxes"].detach().cpu().numpy().tolist(),
+                "labels": pred_dict["labels"].detach().cpu().numpy().tolist(),
+                "scores": pred_dict["scores"].detach().cpu().numpy().tolist(),
                 # TODO check if it works -- Convert masks if needed - assuming masks are binary tensors
-                "masks": pred_dict["masks"].cpu().numpy().tolist(),
+                "masks": masks.tolist(),
             }
         }
-        return json.dumps(json_output).encode("utf-8")
+        return json.dumps(json_output).encode("utf-8"), accept
     else:
         output_image = _build_image(prediction).cpu()
         if accept in _python_content_types:
-            return output_image.numpy()
+            output_array = output_image.numpy()
+            buffer = io.BytesIO()
+            np.save(buffer, output_array)
+            return buffer.getvalue(), accept
         elif accept in _img_content_types:
             if accept == "image/jpeg":
-                return encode_jpeg(output_image).numpy().tobytes()
+
+                return encode_jpeg(output_image).numpy().tobytes(), accept
             elif accept == "image/png" or accept == "application/x-image":
-                return encode_png(output_image).numpy().tobytes()
+
+                return encode_png(output_image).numpy().tobytes(), accept
         else:
             raise Exception("Unsupported content type: {}".format(accept))

@@ -1,75 +1,167 @@
+import json
 from aws_cdk import (
+    CfnOutput,
     aws_ec2 as ec2,
     aws_ecs as ecs,
-    aws_ecr as ecr,
+    aws_ssm as ssm,
     aws_iam as iam,
     aws_ecs_patterns as ecs_patterns,
+    aws_ecr_assets as ecr_assets,
+    aws_sagemaker as sagemaker,
+    aws_elasticloadbalancingv2 as elb,
+    aws_autoscaling as autoscaling,
     NestedStack,
-    Construct,
+    Stack,
     Duration,
 )
+
+from pathlib import Path
+
+from constructs import Construct
+
+from BaseModel import BaseModel
 
 
 class StreamlitStack(NestedStack):
 
-    def __init__(self, scope: Construct, id: str, **kwargs) -> None:
+    def __init__(
+        self, scope: Construct, id: str, models: list[BaseModel], **kwargs
+    ) -> None:
         super().__init__(scope, id, **kwargs)
 
         # Create a VPC
         vpc = ec2.Vpc(
             self,
-            "WebDemoVPC",
+            "StreamlitDemoVPC",
             max_azs=2,
-        )  # default is all AZs in region,
-        # but you can limit to avoid reaching resource quota
+        )
 
         # Create ECS cluster
-        cluster = ecs.Cluster(self, "WebDemoCluster", vpc=vpc)
-
-        # Add an AutoScalingGroup with spot instances to the existing cluster
-        cluster.add_capacity(
-            "AsgSpot",
-            max_capacity=2,
-            min_capacity=1,
-            desired_capacity=2,
-            instance_type=ec2.InstanceType("c5.xlarge"),
-            spot_price="0.0735",
-            # Enable the Automated Spot Draining support for Amazon ECS
-            spot_instance_draining=True,
+        cluster = ecs.Cluster(
+            self, "WebDemoCluster", vpc=vpc, enable_fargate_capacity_providers=True
         )
 
-        # Build Dockerfile from local folder and push to ECR
-        image = ecs.ContainerImage.from_asset("../streamlit_app")
+        # add the models as jsons to a single parameter in ssm parameter store, change the "endpoint" key with its endpointname
 
-        # Create Fargate service
+        param = ",".join(
+            [
+                json.dumps(
+                    {
+                        "name": model.name,
+                        "endpoint": model.endpoint.attr_endpoint_name,
+                        "problem_type": model.problem_type,
+                        "framework": model.framework,
+                        "serverless": model.serverless,
+                        "endpoint": model.endpoint.attr_endpoint_name,
+                    },
+                    indent=4,
+                )
+                for model in models
+            ]
+        )
+
+        ssm_parameter = ssm.StringParameter(
+            self,
+            "ModelsParameter",
+            parameter_name="ModelsParameter",
+            string_value=param,
+        )
+
+        sagemaker_endpoint_policy = iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=[
+                "sagemaker:InvokeEndpoint",
+                "sagemaker:ListEndpoints",
+                "sagemaker:DescribeEndpoint",
+            ],
+            # over the endpoints
+            resources=["*"],
+        )
+
+        ssm_endpoint_policy = iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=[
+                "ssm:GetParameter",
+                "ssm:GetParameters",
+                "ssm:GetParametersByPath",
+                "ssm:ListTagsForResource",
+            ],
+            resources=[ssm_parameter.parameter_arn],
+        )
+
+        ecs_task_policy = iam.ManagedPolicy.from_aws_managed_policy_name(
+            "service-role/AmazonECSTaskExecutionRolePolicy"
+        )
+
+        task_role = iam.Role(
+            self,
+            "TaskRole",
+            assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+            inline_policies={
+                "ECSTaskpolicy": iam.PolicyDocument(
+                    statements=[
+                        sagemaker_endpoint_policy,
+                        ssm_endpoint_policy,
+                    ]
+                )
+            },
+        )
+
+        execution_role = iam.Role(
+            self,
+            "ExecutionRole",
+            assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+            managed_policies=[ecs_task_policy],
+        )
+
+        fargate_task_definition = ecs.FargateTaskDefinition(
+            self,
+            "StreamlitTaskDefinition",
+            memory_limit_mib=4096,
+            cpu=2048,
+            execution_role=execution_role,
+            task_role=task_role,
+        )
+
+        streamlit_source_folder = str(Path(__file__).parent.parent / "streamlit_app")
+
+        image = ecs.ContainerImage.from_asset(
+            str(streamlit_source_folder), platform=ecr_assets.Platform.LINUX_AMD64
+        )
+
+        fargate_task_definition.add_container(
+            "StreamlitContainer",
+            image=image,
+            port_mappings=[ecs.PortMapping(container_port=8501)],
+            logging=ecs.LogDriver.aws_logs(stream_prefix="StreamlitContainer"),
+        )
+
         fargate_service = ecs_patterns.ApplicationLoadBalancedFargateService(
             self,
-            "WebDemoService",
-            cluster=cluster,  # Required
-            cpu=2048,  # Default is 256 (512 is 0.5 vCPU, 2048 is 2 vCPU)
-            desired_count=1,  # Default is 1
-            task_image_options=ecs_patterns.ApplicationLoadBalancedTaskImageOptions(
-                image=image,
-                container_port=8501,
-            ),
-            memory_limit_mib=4096,  # Default is 512
+            "StreamlitService",
+            cluster=cluster,
+            desired_count=1,
             public_load_balancer=True,
-        )  # Default is True
-
-        # Add policies to task role
-        fargate_service.task_definition.add_to_task_role_policy(
-            iam.PolicyStatement(
-                effect=iam.Effect.ALLOW,
-                actions=["rekognition:*"],
-                resources=["*"],
-            )
+            task_definition=fargate_task_definition,
+            load_balancer_name="streamlit-demo",
+            protocol=elb.ApplicationProtocol.HTTP,
+            health_check_grace_period=Duration.seconds(60),
+            min_healthy_percent=100,
         )
 
-        # Setup task auto-scaling
-        scaling = fargate_service.service.auto_scale_task_count(max_capacity=10)
-        scaling.scale_on_cpu_utilization(
-            "CpuScaling",
-            target_utilization_percent=50,
-            scale_in_cooldown=Duration.seconds(60),
-            scale_out_cooldown=Duration.seconds(60),
+        # Setup task "auto-scaling"
+        fargate_service.service.auto_scale_task_count(max_capacity=1)
+
+        CfnOutput(
+            self,
+            "LoadBalancerDNS",
+            value=fargate_service.load_balancer.load_balancer_dns_name,
+            description="The DNS name of the load balancer",
+        )
+
+        CfnOutput(
+            self,
+            "SSMParameter",
+            value=ssm_parameter.parameter_name,
+            description="The SSM parameter name",
         )

@@ -1,5 +1,6 @@
 from pathlib import Path
 from dataclasses import dataclass
+from aws_cdk.aws_sagemaker import CfnEndpoint
 
 
 @dataclass
@@ -12,6 +13,7 @@ class BaseModel:
     image_uri: str
     problem_type: str
     serverless: bool = True
+    endpoint: CfnEndpoint = None
 
     def __post_init__(self):
         self.data_path = Path(self.data_path)
@@ -29,4 +31,7 @@ class BaseModel:
             raise FileNotFoundError(f"Model file {self.file_name} does not exist")
 
     def __str__(self):
-        return f"Model {self.name} | {"serverless" if self.serverless else ""} {self.problem_type} on {self.framework}."
+        base_str = f"Model {self.name} | {"serverless" if self.serverless else ""} {self.problem_type} on {self.framework}."
+        if self.endpoint is not None:
+            base_str += f" Endpoint: {self.endpoint.attr_endpoint_name}"
+        return base_str
