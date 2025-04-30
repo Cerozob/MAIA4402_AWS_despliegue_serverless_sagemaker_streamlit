@@ -5,6 +5,7 @@ import io
 import base64
 from PIL import Image, ImageDraw, ImageFont
 from typing import Dict, List, Tuple, Optional
+import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -96,7 +97,10 @@ def get_content_types_for_problem_type(problem_type: str) -> List[str]:
 
 
 def invoke_endpoint(
-    endpoint_name: str, data: bytes, content_type: str = "application/json"
+    endpoint_name: str,
+    data: bytes,
+    content_type: str = "application/x-image",
+    accept: str = "application/json",
 ) -> Dict:
     """
     Invoke a SageMaker endpoint with data
@@ -115,19 +119,33 @@ def invoke_endpoint(
             EndpointName=endpoint_name,
             ContentType=content_type,
             Body=data,
-            Accept=content_type,
+            Accept=accept,
         )
 
         # Read the response body once
         response_body = response["Body"].read()
 
         # Process based on content type
-        if content_type == "application/json" or content_type == "text/plain":
+        if accept == "application/json" or accept == "text/plain":
             try:
                 result = json.loads(response_body.decode())
             except json.JSONDecodeError:
                 # If not valid JSON, return as text
                 result = {"predictions": response_body.decode()}
+        elif accept == "application/x-image":
+            # For image responses, return the raw bytes
+            img = Image.open(io.BytesIO(response_body))
+            result = {"image": img}
+        elif accept == "application/x-npy":
+            # For numpy array responses
+            np_array = np.load(io.BytesIO(response_body))
+            result = {"predictions": np_array.tolist()}
+        elif accept == "image/jpeg":
+            img = Image.open(io.BytesIO(response_body))
+            result = {"image": img}
+        elif accept == "image/png":
+            img = Image.open(io.BytesIO(response_body))
+            result = {"image": img}
         else:
             # For binary responses or other formats
             result = {"predictions": response_body}
@@ -227,7 +245,7 @@ def get_image_download_link(img: Image.Image, filename: str, text: str) -> str:
     return href
 
 
-def prepare_image_for_model(image: Image.Image) -> bytes:
+def prepare_image_for_model(image: Image.Image) -> Tuple[bytes, str]:
     """
     Convert a PIL Image to bytes for sending to a model based on content type
 
@@ -235,25 +253,30 @@ def prepare_image_for_model(image: Image.Image) -> bytes:
         image (Image.Image): PIL Image object
 
     Returns:
-        bytes: Image as bytes
+        Tuple[bytes, str]: Image as bytes and corresponding mime type
     """
     img_byte_arr = io.BytesIO()
 
     # Get image format from the image itself
     img_format = image.format or "PNG"  # Default to PNG if format is None
 
+    mime_type = "image/png"  # Default mime type
     if img_format.upper() == "JPEG":
         image.save(img_byte_arr, format="JPEG")
+        mime_type = "image/jpeg"
     elif img_format.upper() == "PNG":
         image.save(img_byte_arr, format="PNG")
+        mime_type = "image/png"
     elif img_format.upper() == "NPY":
         # Convert to numpy array and save
         import numpy as np
 
         img_array = np.array(image)
         np.save(img_byte_arr, img_array)
+        mime_type = "application/x-npy"
     else:
         # For other formats, use PNG as default
         image.save(img_byte_arr, format="PNG")
+        mime_type = "image/png"
 
-    return img_byte_arr.getvalue()
+    return img_byte_arr.getvalue(), mime_type

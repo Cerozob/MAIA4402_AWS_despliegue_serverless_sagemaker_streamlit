@@ -99,7 +99,7 @@ def main():
                 if st.button("Detect Objects"):
                     with st.spinner("Processing..."):
                         # Prepare the image for the model with the selected content type
-                        img_byte_arr = prepare_image_for_model(image)
+                        img_byte_arr, mimetype = prepare_image_for_model(image)
 
                         # Invoke the real SageMaker endpoint
                         model_details = get_endpoint_details_from_sagemaker(
@@ -112,7 +112,8 @@ def main():
                         result = invoke_endpoint(
                             selected_model["endpoint"],
                             img_byte_arr,
-                            content_type=selected_content_type,
+                            content_type=mimetype,
+                            accept=selected_content_type,
                         )
 
                         # Display the results
