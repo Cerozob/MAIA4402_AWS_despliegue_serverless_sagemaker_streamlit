@@ -22,7 +22,7 @@ from constructs import Construct
 from BaseModel import BaseModel
 
 
-class StreamlitStack(NestedStack):
+class StreamlitStack(Stack):
 
     def __init__(
         self, scope: Construct, id: str, models: list[BaseModel], **kwargs
@@ -39,32 +39,6 @@ class StreamlitStack(NestedStack):
         # Create ECS cluster
         cluster = ecs.Cluster(
             self, "WebDemoCluster", vpc=vpc, enable_fargate_capacity_providers=True
-        )
-
-        # add the models as jsons to a single parameter in ssm parameter store, change the "endpoint" key with its endpointname
-
-        param = ",".join(
-            [
-                json.dumps(
-                    {
-                        "name": model.name,
-                        "endpoint": model.endpoint.attr_endpoint_name,
-                        "problem_type": model.problem_type,
-                        "framework": model.framework,
-                        "serverless": model.serverless,
-                        "endpoint": model.endpoint.attr_endpoint_name,
-                    },
-                    indent=4,
-                )
-                for model in models
-            ]
-        )
-
-        ssm_parameter = ssm.StringParameter(
-            self,
-            "ModelsParameter",
-            parameter_name="ModelsParameter",
-            string_value=param,
         )
 
         sagemaker_endpoint_policy = iam.PolicyStatement(
@@ -86,7 +60,7 @@ class StreamlitStack(NestedStack):
                 "ssm:GetParametersByPath",
                 "ssm:ListTagsForResource",
             ],
-            resources=[ssm_parameter.parameter_arn],
+            resources=["*"],
         )
 
         ecs_task_policy = iam.ManagedPolicy.from_aws_managed_policy_name(
@@ -157,11 +131,4 @@ class StreamlitStack(NestedStack):
             "LoadBalancerDNS",
             value=fargate_service.load_balancer.load_balancer_dns_name,
             description="The DNS name of the load balancer",
-        )
-
-        CfnOutput(
-            self,
-            "SSMParameter",
-            value=ssm_parameter.parameter_name,
-            description="The SSM parameter name",
         )

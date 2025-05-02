@@ -38,5 +38,6 @@
     "us-east-1d",
     "us-east-1e",
     "us-east-1f"
-  ]
+  ],
+  "ssm:account=711387129682:parameterName=ModelsParameter:region=us-east-1": "dummy-value-for-ModelsParameter"
 }

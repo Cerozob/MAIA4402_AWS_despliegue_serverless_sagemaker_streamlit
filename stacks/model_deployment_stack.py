@@ -1,9 +1,11 @@
+import json
 from aws_cdk import (
     NestedStack,
     aws_s3 as s3,
     aws_iam as iam,
     aws_sagemaker as sagemaker,
     aws_s3_deployment as s3deploy,
+    aws_ssm as ssm,
     CfnOutput,
     Stack,
 )
@@ -101,12 +103,20 @@ class ModelDeploymentStack(NestedStack):
 
         img_uri = model_obj.image_uri
 
+        model_mode = "SingleModel"
+        hundredmb = 100 * 1024 * 1024
+        model_environment = {
+            "TS_MAX_REQUEST_SIZE": hundredmb,
+            "TS_MAX_RESPONSE_SIZE": hundredmb,
+        }
+
         if go_serverless:
             serverless_container_definition = (
                 sagemaker.CfnModel.ContainerDefinitionProperty(
                     image=img_uri,
                     model_data_url=modelurl,
-                    mode="SingleModel",
+                    mode=model_mode,
+                    environment=model_environment,
                 )
             )
             container_definition = serverless_container_definition
@@ -118,7 +128,8 @@ class ModelDeploymentStack(NestedStack):
                     image_config=sagemaker.CfnModel.ImageConfigProperty(
                         repository_access_mode="Platform",
                     ),
-                    mode="SingleModel",
+                    mode=model_mode,
+                    environment=model_environment,
                 )
             )
             container_definition = normal_container_definition
@@ -146,8 +157,6 @@ class ModelDeploymentStack(NestedStack):
                 ],
             )
         )
-
-        timestamp = tarfile.stat().st_mtime
 
         model = sagemaker.CfnModel(
             self,
@@ -229,7 +238,48 @@ class ModelDeploymentStack(NestedStack):
             )
             endpoint = normal_endpoint
 
+        # add the models as jsons to a single parameter in ssm parameter store, change the "endpoint" key with its endpointname
+
+        param = json.dumps(
+            {
+                "name": model_obj.name,
+                "endpoint": endpoint.attr_endpoint_name,
+                "problem_type": model_obj.problem_type,
+                "framework": model_obj.framework,
+                "serverless": model_obj.serverless,
+                "image_uri": model_obj.image_uri,
+            }
+        )
+
+        parameter_name = "ModelsParameter"
+
+        # check if a parameter with that name already exisrts
+
+        models_parameter_value = ssm.StringParameter.value_from_lookup(
+            self, parameter_name
+        )
+        default_value = f"dummy-value-for-{parameter_name}"
+
+        if models_parameter_value == default_value:
+            models_parameter_value = f"[{param}]"
+        else:
+            models_parameter_value = models_parameter_value[:-1] + f", {param}]"
+
+        ssm_parameter = ssm.StringParameter(
+            self,
+            "ModelsParameter",
+            parameter_name=parameter_name,
+            string_value=models_parameter_value,
+        )
+
         self.endpoint = endpoint
+
+        CfnOutput(
+            self,
+            "SSMParameter",
+            value=ssm_parameter.parameter_name,
+            description="The SSM parameter name",
+        )
 
         CfnOutput(
             self,

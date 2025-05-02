@@ -1,13 +1,6 @@
 import streamlit as st
-import numpy as np
-import pandas as pd
 from PIL import Image
-import io
-import os
-import time
-import random
 import logging
-from typing import Dict, List, Tuple, Optional
 
 # Import helper functions from utils.py
 from utils import (
@@ -73,15 +66,18 @@ def main():
             index=0,
         )
 
-        # Confidence threshold for object detection
-        confidence_threshold = st.sidebar.slider(
-            "Confidence Threshold", min_value=0.0, max_value=1.0, value=0.5, step=0.05
-        )
-
         # Main content
         st.write(f"## Testing {selected_model['name']}")
 
         if selected_model["problem_type"] == "object detection":
+            # Confidence threshold for object detection
+            confidence_threshold = st.sidebar.slider(
+                "Confidence Threshold",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5,
+                step=0.05,
+            )
             st.write("Upload an image to detect objects:")
 
             # File uploader
@@ -93,21 +89,42 @@ def main():
                 # Display the uploaded image
                 image = Image.open(uploaded_file)
 
-                st.image(image, caption="Uploaded Image", use_container_width=True)
+                button = st.button("Detect People", use_container_width=True)
+                placeholder = st.empty()
+                spinner_obj = st.spinner("Inference in progress...", show_time=True)
+
+                col1, col2 = st.columns(
+                    [0.5, 0.5],
+                )
+
+                with col1:
+                    col1.image(
+                        image, caption="Uploaded Image", use_container_width=True
+                    )
+                with col2:
+
+                    # display the same image, then change it later to the overlaid predictions
+                    col2image = col2.image(
+                        image,
+                        caption="Click 'Detect People' to highlight where are people in the picture",
+                        use_container_width=True,
+                    )
+
+                # Prepare the image for the model with the selected content type
+                img_byte_arr, mimetype = prepare_image_for_model(image)
+
+                # Invoke the real SageMaker endpoint
+                model_details = get_endpoint_details_from_sagemaker(
+                    selected_model["endpoint"]
+                )
+                # write in screen the model data, show as a json
+                with col1:
+                    st.write("Model Details:")
+                    st.json(model_details)
 
                 # Process the image when the user clicks the button
-                if st.button("Detect Objects"):
-                    with st.spinner("Processing..."):
-                        # Prepare the image for the model with the selected content type
-                        img_byte_arr, mimetype = prepare_image_for_model(image)
-
-                        # Invoke the real SageMaker endpoint
-                        model_details = get_endpoint_details_from_sagemaker(
-                            selected_model["endpoint"]
-                        )
-                        # write in screen the model data, show as a json
-
-                        st.json(model_details)
+                if button:
+                    with placeholder, spinner_obj:
 
                         result = invoke_endpoint(
                             selected_model["endpoint"],
@@ -116,28 +133,48 @@ def main():
                             accept=selected_content_type,
                         )
 
-                        # Display the results
-                        if result and "predictions" in result:
-                            st.write("### Detection Results:")
+                        # result is a dict that contains a key with its content-type, and the corresponding object in that type
+                        # if accept was an image, there will be an Image object ready to display, if its a json, use the draw_bboxes function
 
-                            # Convert predictions to DataFrame for display
-                            predictions = result["predictions"]
-                            if predictions:
-                                df = pd.DataFrame(predictions)
-                                st.dataframe(df)
+                        if selected_content_type in [
+                            "application/x-image",
+                            "image/jpeg",
+                            "image/png",
+                        ]:
 
-                                # Draw bounding boxes on the image
-                                annotated_image = draw_bounding_boxes(
-                                    image.copy(), predictions, confidence_threshold
-                                )
-                                st.image(
-                                    annotated_image,
+                            with col2:
+
+                                col2image.image(
+                                    result[selected_content_type],
                                     caption="Detection Results",
                                     use_container_width=True,
                                 )
 
-                                # Provide download link for the annotated image
+                                # Provide download link for the image
                                 st.markdown(
+                                    get_image_download_link(
+                                        result[selected_content_type],
+                                        "detection_result.jpg",
+                                        "Download Detection Result",
+                                    ),
+                                    unsafe_allow_html=True,
+                                )
+                        elif selected_content_type == "application/json":
+                            # Draw bounding boxes on the image
+                            annotated_image = draw_bounding_boxes(
+                                image.copy(),
+                                result[selected_content_type],
+                                confidence_threshold,
+                            )
+                            with col2:
+
+                                col2image.image(
+                                    annotated_image,
+                                    caption="Detection Results with Bounding Boxes",
+                                    use_container_width=True,
+                                )
+                                # Provide download link for the annotated image
+                                col2.markdown(
                                     get_image_download_link(
                                         annotated_image,
                                         "detection_result.jpg",
@@ -145,48 +182,39 @@ def main():
                                     ),
                                     unsafe_allow_html=True,
                                 )
-                            else:
-                                st.info(
-                                    "No objects detected with the current confidence threshold."
+                                col2.json(result[selected_content_type])
+                        elif selected_content_type == "application/x-npy":
+                            # draw the raw numpy array as an image
+
+                            # transpose 120
+
+                            result[selected_content_type] = result[
+                                selected_content_type
+                            ].transpose(1, 2, 0)
+
+                            with col2:
+
+                                col2image.image(
+                                    result[selected_content_type],
+                                    caption="Detection Results with Bounding Boxes",
+                                    use_container_width=True,
                                 )
+                                # Provide download link for the annotated image
+                                col2.markdown(
+                                    "To download the image, select another content type"
+                                )
+
+                                col2.json(
+                                    result[selected_content_type].tolist(), expanded=1
+                                )
+
                         else:
-                            st.error("Failed to get valid predictions from the model.")
-
-        elif selected_model["problem_type"] == "text classification":
-            st.write("Enter text for classification:")
-
-            # Text input
-            text_input = st.text_area("Input Text", height=150)
-
-            if st.button("Classify Text") and text_input:
-                with st.spinner("Processing..."):
-
-                    # Invoke the real SageMaker endpoint
-                    result = invoke_endpoint(
-                        selected_model["endpoint"],
-                        text_input.encode("utf-8"),
-                        content_type=selected_content_type,
-                    )
-
-                    # Display the results
-                    if result and "predictions" in result:
-                        st.write("### Classification Results:")
-
-                        # Convert predictions to DataFrame for display
-                        predictions = result["predictions"]
-                        if predictions:
-                            df = pd.DataFrame(predictions)
-                            df = df.sort_values(by="probability", ascending=False)
-
-                            # Display as dataframe
-                            st.dataframe(df)
-
-                            # Display as chart
-                            st.bar_chart(df.set_index("class")["probability"])
-                        else:
-                            st.info("No classification results returned.")
-                    else:
-                        st.error("Failed to get valid predictions from the model.")
+                            with col2:
+                                col2.error(
+                                    f"Unsupported content type for detection: {selected_content_type}, model answered with: {
+                                    result
+                                }"
+                                )
         else:
             st.write(
                 f"Support for {selected_model['problem_type']} is not implemented yet."

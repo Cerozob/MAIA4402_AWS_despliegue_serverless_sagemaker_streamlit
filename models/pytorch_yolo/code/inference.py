@@ -14,12 +14,24 @@ import threading
 import logging
 import json
 
+# Constants
+COLORS = [
+    (255, 0, 0),  # Red
+    (0, 255, 0),  # Green
+    (0, 0, 255),  # Blue
+    (255, 255, 0),  # Yellow
+    (255, 0, 255),  # Magenta
+    (0, 255, 255),  # Cyan
+    (128, 0, 0),  # Maroon
+    (0, 128, 0),  # Green (dark)
+    (0, 0, 128),  # Navy
+    (128, 128, 0),  # Olive
+]
+
+
 logger = getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-
-_prediction_threshold = 0.5
-_segmentation_threshold = 0.6
 
 _model_file_name = "model.pt"
 
@@ -100,25 +112,39 @@ def input_fn(input_data: bytes, content_type):
 
 def predict_fn(image_tensor, model):
     logger.info("predict_fn: Predicting for an image...")
-    model.eval()
     with torch.no_grad():
         predictions = model([image_tensor])
         pred = predictions[0] if len(predictions[0]) > 0 else predictions[1][0]
-        score_mask = pred["scores"] > _prediction_threshold
-        pred = {
-            "labels": pred["labels"][score_mask],
-            "scores": pred["scores"][score_mask],
-            "boxes": pred["boxes"][score_mask],
-            "masks": pred["masks"][score_mask],
+        preds = {
+            "labels": pred["labels"],
+            "scores": pred["scores"],
+            "boxes": pred["boxes"],
+            "masks": pred["masks"],
         }
         logger.info("predict_fn: Predicting for an image done")
 
-    return {"prediction": pred, "image_tensor": image_tensor}
+    return {"predictions": preds, "image_tensor": image_tensor}
 
 
 def _build_image(prediction_dict):
+
+    _segmentation_threshold = 0.8
+    _prediction_threshold = 0.8
+    logger.info(
+        f"[INFO] Image requested - masking with threshold {_segmentation_threshold}. To get all predictions, request a JSON response"
+    )
     image_tensor = prediction_dict["image_tensor"]
-    pred = prediction_dict["prediction"]
+    preds: dict = prediction_dict["predictions"]
+
+    score_mask = preds["scores"] > _prediction_threshold
+
+    new_preds = {
+        "labels": preds["labels"][score_mask],
+        "scores": preds["scores"][score_mask],
+        "boxes": preds["boxes"][score_mask],
+        "masks": preds["masks"][score_mask],
+    }
+
     image = (
         255.0
         * (image_tensor - image_tensor.min())
@@ -127,12 +153,16 @@ def _build_image(prediction_dict):
     image = image[:3, ...]
 
     pred_labels = [
-        f"person: {score:.3f}" for _, score in zip(pred["labels"], pred["scores"])
+        f"person: {score:.3f}"
+        for _, score in zip(new_preds["labels"], new_preds["scores"])
     ]
-    pred_boxes = pred["boxes"].long()
-    output_image = draw_bounding_boxes(image, pred_boxes, pred_labels, colors="red")
+    pred_boxes = new_preds["boxes"].long()
+    box_colors = [COLORS[i % len(COLORS)] for i in range(len(pred_boxes))]
+    output_image = draw_bounding_boxes(
+        image, pred_boxes, pred_labels, colors=box_colors, width=3
+    )
 
-    masks = (pred["masks"] > _segmentation_threshold).squeeze(1)
+    masks = (new_preds["masks"] > _segmentation_threshold).squeeze(1)
     output_image = draw_segmentation_masks(
         output_image, masks, alpha=0.5, colors="blue"
     )
@@ -148,17 +178,15 @@ def output_fn(prediction, accept):
 
     # return the response
     if accept == "application/json":
-        pred_dict = prediction["prediction"]  # Get the prediction dictionary
-        masks = (pred_dict["masks"] > _segmentation_threshold).detach().cpu().numpy()
+        pred_dict = prediction["predictions"]
+        # Get the prediction dictionary
+        # masks = (pred_dict["masks"] > 0.2).detach().cpu().numpy().astype(int)
 
-        # Convert PyTorch tensors to lists and create JSON-serializable dictionary
         json_output = {
             "predictions": {
                 "boxes": pred_dict["boxes"].detach().cpu().numpy().tolist(),
                 "labels": pred_dict["labels"].detach().cpu().numpy().tolist(),
                 "scores": pred_dict["scores"].detach().cpu().numpy().tolist(),
-                # TODO check if it works -- Convert masks if needed - assuming masks are binary tensors
-                "masks": masks.tolist(),
             }
         }
         return json.dumps(json_output).encode("utf-8"), accept

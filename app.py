@@ -47,12 +47,15 @@ for base_model in models:
 
     base_model.endpoint = deployed_model_stack.endpoint
 
+# this stack deploys a fargate service, which costs around 5 usd per day
+# so, we leave it as an independent stack so that we can stop it to not incur costs
+# it is also easier to test it locally with the other stack deployed
 frontend_stack = StreamlitStack(
-    base_stack,
+    app,
     "StreamlitStack",
     models=models,
-    # env=env,
-    # stack_name="maia4402-streamlit-stack",
+    env=env,
+    stack_name="maia4402-streamlit-stack",
 )
 
 Tags.of(app).add("Project", "MAIA4402-Demo")

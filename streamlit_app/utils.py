@@ -63,9 +63,16 @@ def get_models_from_ssm() -> List[Dict]:
         ssm_client = boto3.client("ssm")
         response = ssm_client.get_parameter(Name="ModelsParameter")
         models_json = response["Parameter"]["Value"]
-        # The parameter contains a comma-separated list of JSON objects
-        models_list = f"[{models_json}]"
-        return json.loads(models_list)
+        # The parameter contains a JSON list of JSON objects
+        return json.loads(models_json)
+    # SSM.Client.exceptions.ParameterNotFound
+    except json.JSONDecodeError:
+        logger.error(
+            f"Error decoding JSON from SSM: {
+            models_json
+        }"
+        )
+        return []
     except Exception as e:
         logger.error(f"Error fetching models from SSM: {e}")
         return []
@@ -83,11 +90,11 @@ def get_content_types_for_problem_type(problem_type: str) -> List[str]:
     """
     if problem_type.lower() == "object detection":
         return [
+            "application/json",
             "image/jpeg",
             "image/png",
             "application/x-image",
             "application/x-npy",
-            "application/json",
         ]
     elif problem_type.lower() == "text classification":
         return ["text/plain", "application/json", "text/csv", "application/jsonlines"]
@@ -101,7 +108,7 @@ def invoke_endpoint(
     data: bytes,
     content_type: str = "application/x-image",
     accept: str = "application/json",
-) -> Dict:
+) -> dict:
     """
     Invoke a SageMaker endpoint with data
 
@@ -111,7 +118,7 @@ def invoke_endpoint(
         content_type (str, optional): Content type of the data. Defaults to "application/json".
 
     Returns:
-        Dict: Response from the endpoint
+        dict: Response from the endpoint, the key is the content type to handle each case differently
     """
     try:
         runtime_client = boto3.client("sagemaker-runtime")
@@ -131,25 +138,22 @@ def invoke_endpoint(
                 result = json.loads(response_body.decode())
             except json.JSONDecodeError:
                 # If not valid JSON, return as text
-                result = {"predictions": response_body.decode()}
+                result = response_body.decode()
         elif accept == "application/x-image":
             # For image responses, return the raw bytes
-            img = Image.open(io.BytesIO(response_body))
-            result = {"image": img}
+            result = Image.open(io.BytesIO(response_body))
+
         elif accept == "application/x-npy":
             # For numpy array responses
-            np_array = np.load(io.BytesIO(response_body))
-            result = {"predictions": np_array.tolist()}
-        elif accept == "image/jpeg":
-            img = Image.open(io.BytesIO(response_body))
-            result = {"image": img}
-        elif accept == "image/png":
-            img = Image.open(io.BytesIO(response_body))
-            result = {"image": img}
-        else:
-            # For binary responses or other formats
-            result = {"predictions": response_body}
+            result = np.load(io.BytesIO(response_body))
 
+        elif accept == "image/jpeg":
+            result = Image.open(io.BytesIO(response_body))
+
+        elif accept == "image/png":
+            result = Image.open(io.BytesIO(response_body))
+        result = {accept: result}
+        print(f"Result: {result}")
         return result
     except Exception as e:
         logger.error(f"Error invoking endpoint {endpoint_name}: {e}")
@@ -157,7 +161,7 @@ def invoke_endpoint(
 
 
 def draw_bounding_boxes(
-    image: Image.Image, predictions: List[Dict], confidence_threshold: float = 0.5
+    image: Image.Image, predictions: dict, confidence_threshold: float = 0.5
 ) -> Image.Image:
     """
     Draw bounding boxes on an image based on model predictions
@@ -170,8 +174,8 @@ def draw_bounding_boxes(
     Returns:
         Image.Image: Image with bounding boxes drawn
     """
+
     draw = ImageDraw.Draw(image)
-    width, height = image.size
 
     # Try to load a font, use default if not available
     try:
@@ -179,49 +183,53 @@ def draw_bounding_boxes(
     except IOError:
         font = ImageFont.load_default()
 
-    for i, pred in enumerate(predictions):
-        if pred.get("confidence", 0) < confidence_threshold:
-            continue
+    """
+        prediction dict has this structure
 
-        # Extract bounding box coordinates
-        # Format may vary based on model output, adjust as needed
-        if "bbox" in pred:
-            # Format: [x_min, y_min, x_max, y_max] normalized
-            bbox = pred["bbox"]
-            x_min, y_min, x_max, y_max = bbox
+        {
+            "predictions": {
+                "boxes": pred_dict["boxes"], -> list
+                "labels": pred_dict["labels"], -> list
+                "scores": pred_dict["scores"], -> list
+                "masks": masks.tolist(), -> boolean masks
+            }
+        }
+    """
 
-            # Convert normalized coordinates to pixel values
-            x_min = int(x_min * width)
-            y_min = int(y_min * height)
-            x_max = int(x_max * width)
-            y_max = int(y_max * height)
-        elif all(k in pred for k in ["x_min", "y_min", "x_max", "y_max"]):
-            # Format with explicit keys
-            x_min = int(pred["x_min"] * width)
-            y_min = int(pred["y_min"] * height)
-            x_max = int(pred["x_max"] * width)
-            y_max = int(pred["y_max"] * height)
-        else:
-            logger.warning(f"Unsupported bounding box format: {pred}")
-            continue
+    boxes = predictions.get("predictions", {}).get("boxes", [])
+    labels = predictions.get("predictions", {}).get("labels", [])
+    scores = predictions.get("predictions", {}).get("scores", [])
 
-        # Get color for this detection
-        color = COLORS[i % len(COLORS)]
+    for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
+        if score >= confidence_threshold:
 
-        # Draw rectangle
-        draw.rectangle([x_min, y_min, x_max, y_max], outline=color, width=3)
+            # Format: [x_min, y_min, x_max, y_max] absolute
+            x_min, y_min, x_max, y_max = box
 
-        # Draw label
-        label = f"{pred.get('class', 'Object')}: {pred.get('confidence', 0):.2f}"
-        text_width, text_height = (
-            draw.textsize(label, font=font) if hasattr(draw, "textsize") else (100, 15)
-        )
-        draw.rectangle(
-            [x_min, y_min - text_height - 2, x_min + text_width, y_min], fill=color
-        )
-        draw.text(
-            (x_min, y_min - text_height - 2), label, fill=(255, 255, 255), font=font
-        )
+            # Get color for this detection
+            color = COLORS[i % len(COLORS)]
+
+            # Draw rectangle
+            draw.rectangle([x_min, y_min, x_max, y_max], outline=color, width=3)
+            label_texts_list = ["", "person"]
+            # Draw label
+            label_text = f"{
+                label_texts_list[label] if label_texts_list[label] is not None else label
+            }: {score:.2f}"
+            text_width, text_height = (
+                draw.textsize(label_text, font=font)
+                if hasattr(draw, "textsize")
+                else (100, 15)
+            )
+            draw.rectangle(
+                [x_min, y_min - text_height - 2, x_min + text_width, y_min], fill=color
+            )
+            draw.text(
+                (x_min, y_min - text_height - 2),
+                label_text,
+                fill=(255, 255, 255),
+                font=font,
+            )
 
     return image
 
@@ -268,8 +276,6 @@ def prepare_image_for_model(image: Image.Image) -> Tuple[bytes, str]:
         image.save(img_byte_arr, format="PNG")
         mime_type = "image/png"
     elif img_format.upper() == "NPY":
-        # Convert to numpy array and save
-        import numpy as np
 
         img_array = np.array(image)
         np.save(img_byte_arr, img_array)
