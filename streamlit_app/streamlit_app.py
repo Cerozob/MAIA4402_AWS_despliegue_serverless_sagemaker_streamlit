@@ -219,7 +219,7 @@ def main():
             st.write("Classification problem type is not implemented yet.")
         elif selected_model["problem_type"] == "machine translation":
 
-            ...
+            st.write("Machine translation problem type is not implemented yet.")
 
         else:
             st.write(
