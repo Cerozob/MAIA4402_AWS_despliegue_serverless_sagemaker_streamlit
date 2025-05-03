@@ -215,6 +215,12 @@ def main():
                                     result
                                 }"
                                 )
+        elif selected_model["problem_type"] == "classification":
+            st.write("Classification problem type is not implemented yet.")
+        elif selected_model["problem_type"] == "machine translation":
+
+            ...
+
         else:
             st.write(
                 f"Support for {selected_model['problem_type']} is not implemented yet."

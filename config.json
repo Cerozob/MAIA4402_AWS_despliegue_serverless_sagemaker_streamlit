@@ -8,19 +8,21 @@
             "file_name": "model.pt",
             "image_uri": "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-cpu-py312-ubuntu22.04-sagemaker",
             "problem_type": "object detection",
-            "serverless": true
+            "serverless": true,
+            "model_card": {}
         }
     ],
     "todo": [
         {
-            "name": "BERTTextClassification",
+            "name": "BERTTranslation",
             "framework": "TensorFlow",
-            "data_path": "./data/tensorflow_bert/",
-            "path": "./models/tensorflow_bert/",
-            "file_name": "model.keras",
+            "data_path": "./data/tensorflow_text/",
+            "path": "./models/tensorflow_text/",
+            "file_name": "transformer.weights.h5",
             "image_uri": "763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.18.0-cpu-py310-ubuntu20.04-sagemaker",
-            "problem_type": "text classification",
-            "serverless": true
+            "problem_type": "machine translation",
+            "serverless": true,
+            "model_card": {}
         },
         {
             "name": "YOLOObjectDetectionKeras",
@@ -30,8 +32,8 @@
             "file_name": "model.keras",
             "image_uri": "763104351884.dkr.ecr.us-east-1.amazonaws.com/tensorflow-inference:2.18.0-cpu-py310-ubuntu20.04-sagemaker",
             "problem_type": "object detection",
-            "serverless": true
+            "serverless": true,
+            "model_card": {}
         }
-    ],
-    "parameter_name": "sagemaker_endpoints"
+    ]
 }

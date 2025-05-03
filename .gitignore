@@ -12,3 +12,5 @@ cdk.out
 *.tar
 *.tar.gz
 *.gz
+*.h5
+*.keras

@@ -8,6 +8,7 @@ from aws_cdk import (
     aws_ssm as ssm,
     CfnOutput,
     Stack,
+    Size,
 )
 
 from pathlib import Path
@@ -89,12 +90,14 @@ class ModelDeploymentStack(NestedStack):
             "deploy_models",
             sources=[
                 s3deploy.Source.asset(
-                    str(tarfile.parent.resolve()), exclude=["*.py", "*.txt", "*.pt"]
+                    str(tarfile.parent.resolve()),
+                    exclude=["*.py", "*.txt", "*.pt", "*.h5"],
                 ),
             ],
             destination_bucket=model_bucket,
             retain_on_delete=False,
-            memory_limit=512,
+            memory_limit=4096,
+            ephemeral_storage_size=Size.mebibytes(8192),
         )
 
         modelBucketDeployment.node.add_dependency(model_bucket)
@@ -165,6 +168,10 @@ class ModelDeploymentStack(NestedStack):
             primary_container=container_definition,
             model_name=model_obj.name,
         )
+
+        model_card: sagemaker.CfnModelCard = model_obj.build_model_card(self)
+
+        model_card.add_dependency(model)
 
         model.node.add_dependency(sagemaker_role)
         model.node.add_dependency(modelBucketDeployment)

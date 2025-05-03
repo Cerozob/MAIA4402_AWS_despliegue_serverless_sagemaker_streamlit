@@ -47,6 +47,9 @@ class StreamlitStack(Stack):
                 "sagemaker:InvokeEndpoint",
                 "sagemaker:ListEndpoints",
                 "sagemaker:DescribeEndpoint",
+                # allow access to model cards
+                "sagemaker:ListModelCards",
+                "sagemaker:DescribeModelCard",
             ],
             # over the endpoints
             resources=["*"],
